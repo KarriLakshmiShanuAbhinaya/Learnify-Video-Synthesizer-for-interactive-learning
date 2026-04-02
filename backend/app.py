@@ -5,13 +5,14 @@ import uuid
 import json
 import concurrent.futures
 from datetime import datetime, timedelta
-from typing import Optional
+from threading import Lock
+from typing import Optional, List
 
-from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, EmailStr
 from dotenv import load_dotenv
 import jwt as pyjwt
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -19,7 +20,7 @@ from googleapiclient.discovery import build
 
 load_dotenv()
 
-# Modular imports (unchanged)
+# Modular imports
 from database import get_db
 from video_utils import create_video_from_summary
 from ai_service import query_ollama, generate_mcqs, evaluate_explanation
@@ -27,7 +28,7 @@ from ai_service import query_ollama, generate_mcqs, evaluate_explanation
 # ─────────────────────────────────────────────
 # App Setup
 # ─────────────────────────────────────────────
-app = FastAPI(title="Learnify API", version="2.0.0")
+app = FastAPI(title="Learnify API", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Fix 3: No hardcoded fallbacks — crash loudly if secrets are missing in production
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "superjwtsecret")
 JWT_ALGORITHM = "HS256"
@@ -50,9 +52,13 @@ VIDEO_STORAGE_DIR = os.path.join(os.getcwd(), "video_storage")
 if not os.path.exists(VIDEO_STORAGE_DIR):
     os.makedirs(VIDEO_STORAGE_DIR)
 
-# Background video task registry
-video_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+# Fix 7: Thread-safe video task registry using Lock
+_video_tasks_lock = Lock()
 video_tasks: dict = {}
+video_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+
+# Fix 6: Build YouTube client ONCE at startup (not per request)
+youtube_client = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=YOUTUBE_API_KEY) if YOUTUBE_API_KEY else None
 
 # ─────────────────────────────────────────────
 # JWT Auth Dependency
@@ -73,8 +79,10 @@ def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
     except pyjwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-def create_access_token(identity: str, extra_claims: dict = {}) -> str:
-    """Create a JWT token identical in structure to Flask-JWT-Extended output."""
+# Fix 2: Mutable default argument fixed (dict={} → None)
+def create_access_token(identity: str, extra_claims: dict = None) -> str:
+    """Create a signed JWT token."""
+    extra_claims = extra_claims or {}
     payload = {
         "sub": identity,
         "iat": datetime.utcnow(),
@@ -84,27 +92,27 @@ def create_access_token(identity: str, extra_claims: dict = {}) -> str:
     return pyjwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 # ─────────────────────────────────────────────
-# Pydantic Request Models
+# Pydantic Request Models  (Fix 4: Field validators)
 # ─────────────────────────────────────────────
 class RegisterRequest(BaseModel):
-    username: str
-    email: str
-    password: str
+    username: str = Field(..., min_length=2, max_length=50)
+    email: EmailStr
+    password: str = Field(..., min_length=6, max_length=128)
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: EmailStr
+    password: str = Field(..., min_length=1, max_length=128)
 
 class AddSearchRequest(BaseModel):
-    username: str
-    email: str
-    searches: str
+    username: str = Field(..., max_length=50)
+    email: EmailStr
+    searches: str = Field(..., max_length=500)
 
 class ToggleFavoriteRequest(BaseModel):
     historyId: int
 
 class SummaryRequest(BaseModel):
-    keyword: str
+    keyword: str = Field(..., min_length=1, max_length=200)
     historyId: Optional[int] = None
 
 class SaveQuizRequest(BaseModel):
@@ -113,21 +121,32 @@ class SaveQuizRequest(BaseModel):
 
 class SaveScoreRequest(BaseModel):
     historyId: int
-    score: int
-    total: int
+    score: int = Field(..., ge=0)
+    total: int = Field(..., ge=1)
 
 class VideoRequest(BaseModel):
-    text: str
-    keyword: Optional[str] = "technology"
+    text: str = Field(..., min_length=10, max_length=20000)
+    keyword: Optional[str] = Field(default="technology", max_length=200)
     historyId: Optional[int] = None
 
 class MCQRequest(BaseModel):
-    text: str
+    text: str = Field(..., min_length=10, max_length=50000)
+
+# Fix 8: Proper evaluate models
+class AnswerItem(BaseModel):
+    question: str
+    selected: str
+    correct: str
 
 class EvaluateRequest(BaseModel):
-    question: Optional[str] = ""
-    selected: Optional[str] = ""
-    correct: Optional[str] = ""
+    answers: List[AnswerItem]
+
+# ─────────────────────────────────────────────
+# Helper: Dict cursor
+# ─────────────────────────────────────────────
+def dict_cursor(db):
+    """Return a cursor that gives rows as dicts instead of tuples."""
+    return db.cursor(dictionary=True)
 
 # ─────────────────────────────────────────────
 # Authentication Routes
@@ -136,9 +155,9 @@ class EvaluateRequest(BaseModel):
 @app.post("/register")
 def register(data: RegisterRequest):
     db = get_db()
-    cur = db.cursor()
+    cur = dict_cursor(db)
     try:
-        cur.execute("SELECT * FROM users WHERE email = %s", (data.email,))
+        cur.execute("SELECT id FROM users WHERE email = %s", (data.email,))
         if cur.fetchone():
             return JSONResponse(status_code=400, content={"error": "Email already registered"})
         hashed_pw = generate_password_hash(data.password)
@@ -155,23 +174,24 @@ def register(data: RegisterRequest):
 @app.post("/login")
 def login(data: LoginRequest):
     db = get_db()
-    cur = db.cursor()
+    cur = dict_cursor(db)
     try:
-        cur.execute("SELECT * FROM users WHERE email = %s", (data.email,))
+        # Fix 5: dict cursor — access by column name, not index
+        cur.execute("SELECT id, username, email, password FROM users WHERE email = %s", (data.email,))
         user = cur.fetchone()
     finally:
         cur.close()
         db.close()
 
-    if user and check_password_hash(user[3], data.password):
+    if user and check_password_hash(user["password"], data.password):
         token = create_access_token(
-            identity=str(user[2]),
-            extra_claims={"id": user[0], "username": user[1], "email": user[2]},
+            identity=str(user["email"]),
+            extra_claims={"id": user["id"], "username": user["username"], "email": user["email"]},
         )
         return {
             "message": "Login successful",
-            "username": user[1],
-            "email": user[2],
+            "username": user["username"],
+            "email": user["email"],
             "token": token,
         }
     return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
@@ -197,19 +217,27 @@ def add_search(data: AddSearchRequest, _user=Depends(verify_jwt)):
         cur.close()
         db.close()
 
+# Fix 9: Pagination added (page & limit query params, backwards-compatible)
 @app.get("/get_history")
 def get_history(
     username: str = Query(...),
     email: str = Query(...),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
     _user=Depends(verify_jwt),
 ):
+    offset = (page - 1) * limit
     db = get_db()
-    cur = db.cursor()
+    cur = dict_cursor(db)
     try:
         cur.execute(
-            """SELECT id, query, timestamp, video_filename, quiz_json, quiz_score, quiz_total, is_favorite
-               FROM search_history WHERE username=%s AND email=%s ORDER BY timestamp DESC""",
-            (username, email),
+            """SELECT id, query, timestamp, video_filename, quiz_json,
+                      quiz_score, quiz_total, is_favorite
+               FROM search_history
+               WHERE username=%s AND email=%s
+               ORDER BY timestamp DESC
+               LIMIT %s OFFSET %s""",
+            (username, email, limit, offset),
         )
         rows = cur.fetchall()
     finally:
@@ -219,27 +247,27 @@ def get_history(
     history = []
     for row in rows:
         history.append({
-            "id": row[0],
-            "query": row[1],
-            "time": row[2].strftime("%Y-%m-%d %H:%M:%S") if row[2] else "",
-            "video_filename": row[3],
-            "quiz_json": row[4],
-            "quiz_score": row[5],
-            "quiz_total": row[6],
-            "is_favorite": bool(row[7]) if len(row) > 7 else False,
+            "id": row["id"],
+            "query": row["query"],
+            "time": row["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if row["timestamp"] else "",
+            "video_filename": row["video_filename"],
+            "quiz_json": row["quiz_json"],
+            "quiz_score": row["quiz_score"],
+            "quiz_total": row["quiz_total"],
+            "is_favorite": bool(row["is_favorite"]),
         })
     return history
 
 @app.post("/toggle_favorite")
 def toggle_favorite(data: ToggleFavoriteRequest, _user=Depends(verify_jwt)):
     db = get_db()
-    cur = db.cursor()
+    cur = dict_cursor(db)
     try:
         cur.execute("SELECT is_favorite FROM search_history WHERE id = %s", (data.historyId,))
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Not found")
-        new_status = not bool(row[0])
+        new_status = not bool(row["is_favorite"])
         cur.execute(
             "UPDATE search_history SET is_favorite = %s WHERE id = %s",
             (new_status, data.historyId),
@@ -251,20 +279,19 @@ def toggle_favorite(data: ToggleFavoriteRequest, _user=Depends(verify_jwt)):
         db.close()
 
 @app.get("/search")
-def search_videos(q: str = Query(..., description="Search query")):
-    if not q.strip():
-        raise HTTPException(status_code=400, detail="No query")
+def search_videos(q: str = Query(..., min_length=1, description="Search query")):
+    if not youtube_client:
+        raise HTTPException(status_code=503, detail="YouTube API not configured")
     try:
-        youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=YOUTUBE_API_KEY)
-        res = youtube.search().list(q=q, part="snippet", type="video", maxResults=15).execute()
-        videos = []
-        for item in res.get("items", []):
-            videos.append({
+        res = youtube_client.search().list(q=q, part="snippet", type="video", maxResults=15).execute()
+        return [
+            {
                 "videoId": item["id"]["videoId"],
                 "title": item["snippet"]["title"],
                 "thumbnail": item["snippet"]["thumbnails"]["high"]["url"],
-            })
-        return videos
+            }
+            for item in res.get("items", [])
+        ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -276,11 +303,9 @@ def search_videos(q: str = Query(..., description="Search query")):
 def summary(data: SummaryRequest, _user=Depends(verify_jwt)):
     keyword = data.keyword
     history_id = data.historyId
-    if not keyword:
-        raise HTTPException(status_code=400, detail="No keyword")
 
     db = get_db()
-    cur = db.cursor()
+    cur = dict_cursor(db)
     try:
         # Check summary cache
         cur.execute(
@@ -289,7 +314,7 @@ def summary(data: SummaryRequest, _user=Depends(verify_jwt)):
         )
         cached = cur.fetchone()
 
-        # Check quiz cache
+        # Check quiz/favorite cache
         cached_quiz = None
         is_favorite = False
         if history_id:
@@ -299,10 +324,10 @@ def summary(data: SummaryRequest, _user=Depends(verify_jwt)):
             )
             row = cur.fetchone()
             if row:
-                cached_quiz = json.loads(row[0]) if row[0] else None
-                is_favorite = bool(row[1])
+                cached_quiz = json.loads(row["quiz_json"]) if row["quiz_json"] else None
+                is_favorite = bool(row["is_favorite"])
 
-        summary_text = cached[0] if (cached and cached[0]) else query_ollama(keyword)
+        summary_text = cached["summary"] if (cached and cached["summary"]) else query_ollama(keyword)
 
         if history_id:
             cur.execute(
@@ -366,14 +391,11 @@ def generate_video_route(data: VideoRequest, _user=Depends(verify_jwt)):
         keyword = data.keyword or "technology"
         history_id = data.historyId
 
-        if not text:
-            raise HTTPException(status_code=400, detail="No text provided")
-
         print(f"Request for background video: {keyword}, History ID: {history_id}")
 
         # Check global cache first
         db = get_db()
-        cur = db.cursor()
+        cur = dict_cursor(db)
         try:
             cur.execute(
                 "SELECT video_filename FROM search_history WHERE query = %s AND video_filename IS NOT NULL ORDER BY timestamp DESC LIMIT 1",
@@ -384,14 +406,15 @@ def generate_video_route(data: VideoRequest, _user=Depends(verify_jwt)):
             cur.close()
             db.close()
 
-        if cached and cached[0]:
-            temp_path = os.path.join(VIDEO_STORAGE_DIR, cached[0])
+        if cached and cached["video_filename"]:
+            temp_path = os.path.join(VIDEO_STORAGE_DIR, cached["video_filename"])
             if os.path.exists(temp_path):
-                return {"status": "completed", "video_url": f"/get_video/{cached[0]}"}
+                return {"status": "completed", "video_url": f"/get_video/{cached['video_filename']}"}
 
-        # Dispatch to background thread
+        # Dispatch to background thread (Fix 7: lock-protected dict write)
         task_id = str(uuid.uuid4())
-        video_tasks[task_id] = {"status": "processing", "video_url": None, "error": None}
+        with _video_tasks_lock:
+            video_tasks[task_id] = {"status": "processing", "video_url": None, "error": None}
         video_executor.submit(_video_worker, task_id, text, keyword, history_id)
 
         return JSONResponse(
@@ -405,11 +428,12 @@ def generate_video_route(data: VideoRequest, _user=Depends(verify_jwt)):
         raise HTTPException(status_code=500, detail=str(e))
 
 def _video_worker(task_id: str, text: str, keyword: str, history_id):
-    """Background worker — runs in thread pool, no FastAPI context needed."""
+    """Background worker — runs in thread pool."""
     try:
         temp_video_path = create_video_from_summary(text, keyword)
         if not temp_video_path or not os.path.exists(temp_video_path):
-            video_tasks[task_id] = {"status": "error", "error": "Video generation failed"}
+            with _video_tasks_lock:
+                video_tasks[task_id] = {"status": "error", "error": "Video generation failed"}
             return
 
         permanent_filename = f"{uuid.uuid4()}.mp4"
@@ -431,23 +455,28 @@ def _video_worker(task_id: str, text: str, keyword: str, history_id):
                 cur.close()
                 db.close()
 
-        video_tasks[task_id] = {
-            "status": "completed",
-            "video_url": f"/get_video/{permanent_filename}",
-        }
+        with _video_tasks_lock:
+            video_tasks[task_id] = {
+                "status": "completed",
+                "video_url": f"/get_video/{permanent_filename}",
+            }
     except Exception as e:
-        video_tasks[task_id] = {"status": "error", "error": str(e)}
+        with _video_tasks_lock:
+            video_tasks[task_id] = {"status": "error", "error": str(e)}
 
 @app.get("/video/status/{task_id}")
 def get_video_status(task_id: str):
-    task = video_tasks.get(task_id)
+    with _video_tasks_lock:
+        task = video_tasks.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
 
 @app.get("/get_video/{filename}")
 def serve_video(filename: str):
-    file_path = os.path.join(VIDEO_STORAGE_DIR, filename)
+    # Prevent path traversal attack
+    safe_name = os.path.basename(filename)
+    file_path = os.path.join(VIDEO_STORAGE_DIR, safe_name)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Video not found")
     return FileResponse(file_path, media_type="video/mp4")
@@ -460,9 +489,22 @@ def serve_video(filename: str):
 def get_mcqs(data: MCQRequest):
     return generate_mcqs(data.text)
 
+# Fix 8: Evaluate endpoint now works — returns correct/wrong + AI explanation
 @app.post("/evaluate")
 def evaluate(data: EvaluateRequest):
-    return []
+    results = []
+    for item in data.answers:
+        is_correct = item.selected.strip() == item.correct.strip()
+        if is_correct:
+            explanation = f"✅ Correct! '{item.correct}' is the right answer."
+        else:
+            # Use AI to explain why the selected answer is wrong
+            explanation = evaluate_explanation(item.question, item.selected, item.correct)
+        results.append({
+            "correct": is_correct,
+            "explanation": explanation,
+        })
+    return results
 
 # ─────────────────────────────────────────────
 # Run

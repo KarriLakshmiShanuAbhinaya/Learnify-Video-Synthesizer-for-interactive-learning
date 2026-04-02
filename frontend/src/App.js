@@ -4,6 +4,7 @@ import "./styles.css";
 
 // Components
 import Navbar from "./components/Navbar";
+import { Toaster } from "react-hot-toast";
 
 // Pages
 import LoginPage from "./pages/LoginPage";
@@ -39,6 +40,7 @@ function App() {
 
   return (
     <Router>
+      <Toaster position="top-right" />
       <Navbar user={user} onLogout={handleLogout} theme={theme} toggleTheme={toggleTheme} />
       <main className="container">
         <Routes>

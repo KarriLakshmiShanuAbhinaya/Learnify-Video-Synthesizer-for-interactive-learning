@@ -1,8 +1,8 @@
+// Fix 10: API URL driven by React environment variables
+// - npm start   → reads .env.development → http://localhost:5000
+// - npm run build → reads .env.production → https://learnify-backend-c7nr.onrender.com
 const CONFIG = {
-    // LOCAL DEV: points to your local FastAPI server
-    API_BASE_URL: "http://localhost:5000",
-    // PRODUCTION: uncomment below and comment above when deploying
-    // API_BASE_URL: "https://learnify-backend-c7nr.onrender.com",
+    API_BASE_URL: process.env.REACT_APP_API_URL || "http://localhost:5000",
 };
 
 export const fetchAuth = async (url, options = {}) => {
