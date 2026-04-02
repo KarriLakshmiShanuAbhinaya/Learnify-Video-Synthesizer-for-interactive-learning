@@ -24,7 +24,7 @@ load_dotenv()
 # Modular imports
 from database import get_db
 from video_utils import create_video_from_summary
-from ai_service import query_ollama, generate_mcqs, evaluate_explanation
+from ai_service import query_ollama, generate_mcqs, evaluate_explanation, generate_performance_analysis
 
 # ─────────────────────────────────────────────
 # App Setup
@@ -145,6 +145,7 @@ class AnswerItem(BaseModel):
     correct: str
 
 class EvaluateRequest(BaseModel):
+    topic: str
     answers: List[AnswerItem]
 
 # ─────────────────────────────────────────────
@@ -510,18 +511,32 @@ def get_mcqs(data: MCQRequest):
 @app.post("/evaluate")
 def evaluate(data: EvaluateRequest):
     results = []
+    answers_for_analysis = []
     for item in data.answers:
         is_correct = item.selected.strip() == item.correct.strip()
         if is_correct:
             explanation = f"✅ Correct! '{item.correct}' is the right answer."
         else:
-            # Use AI to explain why the selected answer is wrong
             explanation = evaluate_explanation(item.question, item.selected, item.correct)
+        
         results.append({
             "correct": is_correct,
             "explanation": explanation,
         })
-    return results
+        answers_for_analysis.append({
+            "question": item.question,
+            "selected": item.selected,
+            "correct": item.correct,
+            "is_correct": is_correct
+        })
+    
+    # Generate overall performance analysis
+    analysis = generate_performance_analysis(data.topic, answers_for_analysis)
+    
+    return {
+        "results": results,
+        "analysis": analysis
+    }
 
 # ─────────────────────────────────────────────
 # Run

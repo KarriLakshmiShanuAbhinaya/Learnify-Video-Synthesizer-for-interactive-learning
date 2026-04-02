@@ -23,6 +23,8 @@ function SummaryPage() {
     const [showExplanation, setShowExplanation] = useState({});
     const [isFavorite, setIsFavorite] = useState(false);
     const [taskId, setTaskId] = useState(null);
+    const [analysis, setAnalysis] = useState("");
+    const [activeTab, setActiveTab] = useState("analysis");
 
     useEffect(() => {
         const fetchSummary = async () => {
@@ -152,6 +154,7 @@ function SummaryPage() {
     const handleSubmitMCQs = async () => {
         try {
             const payload = {
+                topic: keyword,
                 answers: mcqs.map((m, i) => ({ question: m.question, selected: answers[i], correct: m.answer })),
             };
             const res = await fetchAuth(`${CONFIG.API_BASE_URL}/evaluate`, {
@@ -159,13 +162,13 @@ function SummaryPage() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
             });
-            const results = await res.json();
-            setEvaluatedResults(results);
+            const data = await res.json();
+            setEvaluatedResults(data.results);
+            setAnalysis(data.analysis);
             setSubmitted(true);
-            const finalScore = results.filter(r => r.correct).length;
+            const finalScore = data.results.filter(r => r.correct).length;
             setScore(finalScore);
 
-            // Save score to backend
             if (historyId) {
                 fetchAuth(`${CONFIG.API_BASE_URL}/save_score`, {
                     method: "POST",
@@ -173,7 +176,7 @@ function SummaryPage() {
                     body: JSON.stringify({ historyId, score: finalScore, total: mcqs.length }),
                 }).catch(err => console.error("Failed to save score", err));
             }
-            toast.success(`You scored ${finalScore}/${mcqs.length}!`);
+            toast.success(`Analysis complete! You scored ${finalScore}/${mcqs.length}.`);
         } catch { toast.error("Evaluation failed"); }
     };
 
@@ -265,69 +268,130 @@ function SummaryPage() {
                                 <Sparkles size={24} className="text-gradient" />
                                 <h2 style={{ margin: 0 }}>Knowledge Check</h2>
                             </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                                {mcqs.map((m, i) => (
-                                    <div key={i} style={{
-                                        padding: '1.5rem',
-                                        borderRadius: '1rem',
-                                        background: 'rgba(255,255,255,0.03)',
-                                        border: '1px solid var(--glass-border)'
-                                    }}>
-                                        <p style={{ fontWeight: 600, marginBottom: '1rem', fontSize: '1.1rem' }}>{i + 1}. {m.question}</p>
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                                            {m.options.map((opt, j) => {
-                                                const isSelected = answers[i] === opt;
-                                                const isCorrect = submitted && opt === m.answer;
-                                                const isWrong = submitted && isSelected && opt !== m.answer;
-
-                                                return (
-                                                    <label key={j} style={{
-                                                        display: 'flex',
-                                                        alignItems: 'center',
-                                                        gap: '1rem',
-                                                        padding: '1rem',
-                                                        borderRadius: '0.75rem',
-                                                        cursor: submitted ? 'default' : 'pointer',
-                                                        background: isCorrect ? 'rgba(34, 197, 94, 0.1)' : isWrong ? 'rgba(239, 68, 68, 0.1)' : isSelected ? 'rgba(139, 92, 246, 0.1)' : 'transparent',
-                                                        border: isCorrect ? '1px solid #22c55e' : isWrong ? '1px solid #ef4444' : isSelected ? '1px solid #8b5cf6' : '1px solid var(--glass-border)',
-                                                        transition: 'all 0.2s'
-                                                    }}>
-                                                        <input
-                                                            type="radio"
-                                                            name={`q-${i}`}
-                                                            disabled={submitted}
-                                                            checked={isSelected}
-                                                            onChange={() => { const a = [...answers]; a[i] = opt; setAnswers(a); }}
-                                                            style={{ accentColor: '#8b5cf6' }}
-                                                        />
-                                                        <span style={{ flex: 1, color: 'var(--fg-main)' }}>{opt}</span>
-                                                        {isCorrect && <CheckCircle2 size={18} color="#22c55e" />}
-                                                        {isWrong && <XCircle size={18} color="#ef4444" />}
-                                                    </label>
-                                                );
-                                            })}
+                            {submitted && (
+                                <div style={{ marginBottom: '2rem' }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
+                                        <div className="glass" style={{ padding: '1rem', borderRadius: '1rem', textAlign: 'center' }}>
+                                            <div style={{ fontSize: '0.8rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>Total Score</div>
+                                            <div style={{ fontSize: '1.5rem', fontWeight: 800 }} className="text-gradient">{score}/{mcqs.length}</div>
                                         </div>
-                                        {submitted && evaluatedResults[i] && (
-                                            <motion.div
-                                                initial={{ height: 0, opacity: 0 }}
-                                                animate={{ height: 'auto', opacity: 1 }}
-                                                style={{ marginTop: '1.5rem', padding: '1rem', background: 'rgba(139, 92, 246, 0.05)', borderRadius: '0.75rem', borderLeft: '4px solid #8b5cf6' }}
+                                        <div className="glass" style={{ padding: '1rem', borderRadius: '1rem', textAlign: 'center' }}>
+                                            <div style={{ fontSize: '0.8rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>Questions</div>
+                                            <div style={{ fontSize: '1.5rem', fontWeight: 800 }}>{mcqs.length}</div>
+                                        </div>
+                                        <div className="glass" style={{ padding: '1rem', borderRadius: '1rem', textAlign: 'center' }}>
+                                            <div style={{ fontSize: '0.8rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>Correct</div>
+                                            <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#22c55e' }}>{score}</div>
+                                        </div>
+                                        <div className="glass" style={{ padding: '1rem', borderRadius: '1rem', textAlign: 'center' }}>
+                                            <div style={{ fontSize: '0.8rem', color: 'var(--fg-muted)', marginBottom: '0.5rem' }}>Incorrect</div>
+                                            <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#ef4444' }}>{mcqs.length - score}</div>
+                                        </div>
+                                    </div>
+
+                                    <div style={{ display: 'flex', gap: '2rem', borderBottom: '1px solid var(--glass-border)', marginBottom: '2rem' }}>
+                                        {["analysis", "review"].map(tab => (
+                                            <button
+                                                key={tab}
+                                                onClick={() => setActiveTab(tab)}
+                                                style={{
+                                                    padding: '1rem 0',
+                                                    background: 'transparent',
+                                                    border: 'none',
+                                                    borderBottom: activeTab === tab ? '3px solid #8b5cf6' : '3px solid transparent',
+                                                    color: activeTab === tab ? '#8b5cf6' : 'var(--fg-muted)',
+                                                    fontWeight: 700,
+                                                    fontSize: '1rem',
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.2s',
+                                                    textTransform: 'uppercase',
+                                                    letterSpacing: '0.05em'
+                                                }}
                                             >
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', color: '#8b5cf6', fontWeight: 600 }}>
-                                                    <Lightbulb size={16} /> Explanation
+                                                {tab === "analysis" ? "Performance Analysis" : "Question Review"}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                                {submitted && activeTab === "analysis" ? (
+                                    <motion.div
+                                        initial={{ opacity: 0, y: 10 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        style={{ 
+                                            padding: '1rem', 
+                                            lineHeight: '1.8', 
+                                            color: 'var(--fg-main)', 
+                                            fontSize: '1.1rem',
+                                            whiteSpace: 'pre-wrap'
+                                        }}
+                                    >
+                                        {analysis ? analysis : "Generating your detailed performance report..."}
+                                    </motion.div>
+                                ) : (
+                                    <>
+                                        {(activeTab === "review" || !submitted) && mcqs.map((m, i) => (
+                                            <div key={i} style={{
+                                                padding: '1.5rem',
+                                                borderRadius: '1rem',
+                                                background: 'rgba(255,255,255,0.03)',
+                                                border: '1px solid var(--glass-border)'
+                                            }}>
+                                                <p style={{ fontWeight: 600, marginBottom: '1rem', fontSize: '1.1rem' }}>{i + 1}. {m.question}</p>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                                    {m.options.map((opt, j) => {
+                                                        const isSelected = answers[i] === opt;
+                                                        const isCorrect = submitted && opt === m.answer;
+                                                        const isWrong = submitted && isSelected && opt !== m.answer;
+
+                                                        return (
+                                                            <label key={j} style={{
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                gap: '1rem',
+                                                                padding: '1rem',
+                                                                borderRadius: '0.75rem',
+                                                                cursor: submitted ? 'default' : 'pointer',
+                                                                background: isCorrect ? 'rgba(34, 197, 94, 0.1)' : isWrong ? 'rgba(239, 68, 68, 0.1)' : isSelected ? 'rgba(139, 92, 246, 0.1)' : 'transparent',
+                                                                border: isCorrect ? '1px solid #22c55e' : isWrong ? '1px solid #ef4444' : isSelected ? '1px solid #8b5cf6' : '1px solid var(--glass-border)',
+                                                                transition: 'all 0.2s'
+                                                            }}>
+                                                                <input
+                                                                    type="radio"
+                                                                    name={`q-${i}`}
+                                                                    disabled={submitted}
+                                                                    checked={isSelected}
+                                                                    onChange={() => { const a = [...answers]; a[i] = opt; setAnswers(a); }}
+                                                                    style={{ accentColor: '#8b5cf6' }}
+                                                                />
+                                                                <span style={{ flex: 1, color: 'var(--fg-main)' }}>{opt}</span>
+                                                                {isCorrect && <CheckCircle2 size={18} color="#22c55e" />}
+                                                                {isWrong && <XCircle size={18} color="#ef4444" />}
+                                                            </label>
+                                                        );
+                                                    })}
                                                 </div>
-                                                <p style={{ margin: 0, fontSize: '0.95rem', color: 'var(--fg-main)' }}>{evaluatedResults[i].explanation}</p>
-                                            </motion.div>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                            <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                {submitted && (
-                                    <div style={{ fontSize: '1.25rem', fontWeight: 700 }}>
-                                        Final Score: <span className="text-gradient">{score} / {mcqs.length}</span>
-                                    </div>
+                                                {submitted && evaluatedResults[i] && (
+                                                    <motion.div
+                                                        initial={{ height: 0, opacity: 0 }}
+                                                        animate={{ height: 'auto', opacity: 1 }}
+                                                        style={{ marginTop: '1.5rem', padding: '1rem', background: 'rgba(139, 92, 246, 0.05)', borderRadius: '0.75rem', borderLeft: '4px solid #8b5cf6' }}
+                                                    >
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', color: '#8b5cf6', fontWeight: 600 }}>
+                                                            <Lightbulb size={16} /> Explanation
+                                                        </div>
+                                                        <p style={{ margin: 0, fontSize: '0.95rem', color: 'var(--fg-main)' }}>{evaluatedResults[i].explanation}</p>
+                                                    </motion.div>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </>
                                 )}
+                            </div>
+
+                            <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <button
                                     className="btn-primary"
                                     onClick={submitted ? generateMCQs : handleSubmitMCQs}

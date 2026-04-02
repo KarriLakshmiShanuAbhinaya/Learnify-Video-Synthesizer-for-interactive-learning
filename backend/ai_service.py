@@ -96,3 +96,41 @@ def evaluate_explanation(question, selected, correct):
         return result.stdout.decode("utf-8", errors="ignore").strip()
     except Exception as e:
         return f"Could not generate feedback: {e}"
+
+def generate_performance_analysis(topic, answers_data):
+    performance_summary = ""
+    for idx, item in enumerate(answers_data):
+        status = "Correct" if item['is_correct'] else "Incorrect"
+        performance_summary += f"Q{idx+1}: {item['question']}\nCandidate Answer: {item['selected']}\nCorrect Answer: {item['correct']}\nResult: {status}\n\n"
+
+    prompt = f"""
+    You are an expert technical interviewer and mentor. Analyze the candidate's performance in a mock test about "{topic}".
+    
+    Candidate's performance details:
+    {performance_summary}
+    
+    Based on this data, provide a structured feedback report with the following sections exactly:
+    
+    Strengths
+    [Summary of what they did well, e.g., "Mastered basic concepts of {topic}, algorithms, and functions."]
+    
+    Areas for Improvement
+    [Specific topics where they struggled, e.g., "Nuances of version control, integration testing vs end-to-end testing."]
+    
+    Recommended Topics
+    - [Topic Name]: [Brief explanation of why it's recommended]
+    
+    Learning Path
+    [Topic Name]
+    Steps:
+    - [Step 1]
+    - [Step 2]
+      
+    Tone: Professional, encouraging, and highly technical. 
+    Format: Use the exact headers "Strengths", "Areas for Improvement", "Recommended Topics", and "Learning Path". Use bullet points for steps. No bold or italic markdown.
+    """
+    try:
+        result = subprocess.run(["ollama", "run", "gemma:2b"], input=prompt.encode("utf-8"), capture_output=True, timeout=300)
+        return result.stdout.decode("utf-8", errors="ignore").strip()
+    except Exception as e:
+        return f"Error generating performance analysis: {e}"
