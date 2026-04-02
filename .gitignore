@@ -23,3 +23,12 @@ final_video.mp4
 *10 min*.mp4
 *10_min*.mp4
 *10min*.mp4
+
+# Flask backup files (kept locally for rollback only)
+backend/*_flask_backup.py
+backend/*_flask_backup.txt
+backend/requirements_flask_backup.txt
+
+# Temp audio files generated during video creation
+backend/*.mp3
+backend/tmp*.mp3

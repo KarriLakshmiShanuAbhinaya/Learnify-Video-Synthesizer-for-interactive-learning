@@ -1,13 +1,14 @@
-from flask_mysqldb import MySQL
+import mysql.connector
+import os
 
-mysql = MySQL()
-
-def init_db(app):
-    app.config['MYSQL_HOST'] = 'localhost'
-    app.config['MYSQL_USER'] = 'root'
-    app.config['MYSQL_PASSWORD'] = 'Vikas@2005'
-    app.config['MYSQL_DB'] = 'learnifydb'
-    mysql.init_app(app)
+DB_CONFIG = {
+    "host": "localhost",
+    "user": "root",
+    "password": "Vikas@2005",
+    "database": "learnifydb",
+}
 
 def get_db():
-    return mysql.connection
+    """Returns a fresh MySQL connection. Caller is responsible for closing it."""
+    conn = mysql.connector.connect(**DB_CONFIG)
+    return conn

@@ -1,5 +1,8 @@
 const CONFIG = {
-    API_BASE_URL: "https://learnify-backend-c7nr.onrender.com",
+    // LOCAL DEV: points to your local FastAPI server
+    API_BASE_URL: "http://localhost:5000",
+    // PRODUCTION: uncomment below and comment above when deploying
+    // API_BASE_URL: "https://learnify-backend-c7nr.onrender.com",
 };
 
 export const fetchAuth = async (url, options = {}) => {
