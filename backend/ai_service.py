@@ -103,20 +103,63 @@ def extract_keywords(text):
             keywords.add(chunk.text)
     return list(keywords)
 
-def generate_mcqs(text, num_questions=10):
+def generate_mcqs(text, num_questions=10, previous_analysis=None):
     sentences = [sent.text.strip() for sent in nlp(text).sents if len(sent.text.split()) > 5]
     keywords = extract_keywords(text)
     mcqs = []
+    
     if not keywords or not sentences: return []
-    for sent in random.sample(sentences, min(len(sentences), num_questions*2)):
+
+    # Adaptive Logic: Extract focus keywords from previous analysis if available
+    focus_keywords = []
+    if previous_analysis:
+        # Simple extraction: look for words in "Areas for Improvement" section
+        try:
+            if "Areas for Improvement" in previous_analysis:
+                improvement_section = previous_analysis.split("Areas for Improvement")[1].split("Recommended Topics")[0]
+                # Extract nouns/proper nouns from this section
+                focus_keywords = extract_keywords(improvement_section)
+        except Exception as e:
+            print(f"Error extracting focus keywords: {e}")
+
+    # Prioritize sentences containing focus keywords
+    targeted_sentences = []
+    if focus_keywords:
+        for sent in sentences:
+            if any(fk.lower() in sent.lower() for fk in focus_keywords):
+                targeted_sentences.append(sent)
+        
+        # Mix targeted sentences with random ones (e.g., 70% targeted)
+        random.shuffle(targeted_sentences)
+        num_targeted = min(len(targeted_sentences), int(num_questions * 0.7))
+        selected_sentences = targeted_sentences[:num_targeted]
+        
+        remaining_needed = num_questions - len(selected_sentences)
+        if remaining_needed > 0:
+            other_sentences = [s for s in sentences if s not in selected_sentences]
+            selected_sentences += random.sample(other_sentences, min(len(other_sentences), remaining_needed))
+    else:
+        selected_sentences = random.sample(sentences, min(len(sentences), num_questions))
+
+    for sent in selected_sentences:
         possible_keywords = [kw for kw in keywords if kw in sent]
         if not possible_keywords: continue
-        key = random.choice(possible_keywords)
+        
+        # If this is a targeted sentence, try to pick a focus keyword as the answer
+        targeted_fks = [fk for fk in focus_keywords if fk.lower() in sent.lower()]
+        if targeted_fks:
+            # Match focus keyword exactly from keywords list if possible
+            matching_keywords = [kw for kw in keywords if kw.lower() in [tfk.lower() for tfk in targeted_fks] and kw in sent]
+            key = random.choice(matching_keywords) if matching_keywords else random.choice(possible_keywords)
+        else:
+            key = random.choice(possible_keywords)
+            
         distractors = random.sample([kw for kw in keywords if kw != key], k=min(3, len(keywords)-1))
         options = [key] + distractors
         random.shuffle(options)
-        mcqs.append({"question": sent.replace(key, "_"), "options": options, "answer": key})
+        mcqs.append({"question": sent.replace(key, "_____"), "options": options, "answer": key})
         if len(mcqs) >= num_questions: break
+        
     return mcqs
 
 def evaluate_explanation(question, selected, correct):

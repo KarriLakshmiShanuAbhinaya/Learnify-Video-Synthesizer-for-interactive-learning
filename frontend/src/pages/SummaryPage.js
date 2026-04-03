@@ -156,6 +156,7 @@ function SummaryPage() {
             const payload = {
                 topic: keyword,
                 answers: mcqs.map((m, i) => ({ question: m.question, selected: answers[i], correct: m.answer })),
+                historyId: historyId
             };
             const res = await fetchAuth(`${CONFIG.API_BASE_URL}/evaluate`, {
                 method: "POST",

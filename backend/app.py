@@ -147,6 +147,7 @@ class AnswerItem(BaseModel):
 class EvaluateRequest(BaseModel):
     topic: str
     answers: List[AnswerItem]
+    historyId: Optional[int] = None
 
 # ─────────────────────────────────────────────
 # Helper: Dict cursor
@@ -307,9 +308,10 @@ def search_videos(q: str = Query(..., min_length=1, description="Search query"))
 # ─────────────────────────────────────────────
 
 @app.post("/summary")
-def summary(data: SummaryRequest, _user=Depends(verify_jwt)):
+def summary(data: SummaryRequest, user=Depends(verify_jwt)):
     keyword = data.keyword
     history_id = data.historyId
+    user_email = user["email"]
 
     # Step 1: Check cache and get basic info (Quick)
     db = get_db()
@@ -317,7 +319,9 @@ def summary(data: SummaryRequest, _user=Depends(verify_jwt)):
     summary_text = None
     cached_quiz = None
     is_favorite = False
+    previous_performance = None
     try:
+        # Get cached summary from ANY record
         cur.execute(
             "SELECT summary FROM search_history WHERE query = %s AND summary IS NOT NULL ORDER BY timestamp DESC LIMIT 1",
             (keyword,),
@@ -326,6 +330,20 @@ def summary(data: SummaryRequest, _user=Depends(verify_jwt)):
         if cached:
             summary_text = cached["summary"]
 
+        # Check for user's previous attempt on this SAME topic to find weak areas
+        cur.execute(
+            """SELECT performance_analysis, quiz_score, quiz_total 
+               FROM search_history 
+               WHERE email = %s AND query = %s AND performance_analysis IS NOT NULL 
+               AND id != %s
+               ORDER BY timestamp DESC LIMIT 1""",
+            (user_email, keyword, history_id or 0),
+        )
+        prev = cur.fetchone()
+        if prev:
+            previous_performance = prev["performance_analysis"]
+
+        # Handle current record state
         if history_id:
             cur.execute(
                 "SELECT quiz_json, is_favorite FROM search_history WHERE id = %s",
@@ -337,14 +355,33 @@ def summary(data: SummaryRequest, _user=Depends(verify_jwt)):
                 is_favorite = bool(row["is_favorite"])
     finally:
         cur.close()
-        db.close() # <--- RELEASE BEFORE AI CALL
+        db.close()
 
     # Step 2: AI Generation (Slow - NO DB CONNECTION HELD)
     if not summary_text:
         summary_text = query_ollama(keyword)
 
-    # Step 3: Persistence (Quick)
-    if history_id:
+    # Adaptive MCQ Logic: If returning user, generate NEW adaptive quiz if none exists for CURRENT history_id
+    if summary_text and not cached_quiz and previous_performance:
+        print(f"Generating adaptive quiz for {user_email} on {keyword}...")
+        cached_quiz = generate_mcqs(summary_text, previous_analysis=previous_performance)
+        
+        # Save this new quiz to the current record immediately
+        if history_id and cached_quiz:
+            db = get_db()
+            cur = db.cursor()
+            try:
+                cur.execute(
+                    "UPDATE search_history SET quiz_json = %s WHERE id = %s",
+                    (json.dumps(cached_quiz), history_id),
+                )
+                db.commit()
+            finally:
+                cur.close()
+                db.close()
+
+    # Step 3: Persistence for summary
+    if history_id and summary_text:
         db = get_db()
         cur = db.cursor()
         try:
@@ -533,6 +570,23 @@ def evaluate(data: EvaluateRequest):
     # Generate overall performance analysis
     analysis = generate_performance_analysis(data.topic, answers_for_analysis)
     
+    # Save results to DB if historyId provided
+    if data.historyId:
+        db = get_db()
+        cur = db.cursor()
+        try:
+            results_json = json.dumps(results)
+            cur.execute(
+                "UPDATE search_history SET performance_analysis = %s, quiz_results = %s WHERE id = %s",
+                (analysis, results_json, data.historyId),
+            )
+            db.commit()
+        except Exception as e:
+            print(f"Error saving evaluation results: {e}")
+        finally:
+            cur.close()
+            db.close()
+
     return {
         "results": results,
         "analysis": analysis

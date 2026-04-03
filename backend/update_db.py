@@ -50,6 +50,20 @@ def update_schema():
             print("Adding 'is_favorite' column...")
             cur.execute("ALTER TABLE search_history ADD COLUMN is_favorite BOOLEAN DEFAULT FALSE")
             db.commit()
+
+        # Check if column 'performance_analysis' exists
+        cur.execute("SHOW COLUMNS FROM search_history LIKE 'performance_analysis'")
+        if not cur.fetchone():
+            print("Adding 'performance_analysis' column...")
+            cur.execute("ALTER TABLE search_history ADD COLUMN performance_analysis TEXT")
+            db.commit()
+
+        # Check if column 'quiz_results' exists
+        cur.execute("SHOW COLUMNS FROM search_history LIKE 'quiz_results'")
+        if not cur.fetchone():
+            print("Adding 'quiz_results' column...")
+            cur.execute("ALTER TABLE search_history ADD COLUMN quiz_results TEXT")
+            db.commit()
         
         cur.close()
         db.close()
