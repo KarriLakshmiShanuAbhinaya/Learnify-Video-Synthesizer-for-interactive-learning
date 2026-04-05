@@ -13,6 +13,7 @@ import SearchPage from "./pages/SearchPage";
 import HistoryPage from "./pages/HistoryPage";
 import TranscriptPage from "./pages/TranscriptPage";
 import SummaryPage from "./pages/SummaryPage";
+import FeedbackPage from "./pages/FeedbackPage";
 
 function App() {
   const [query, setQuery] = useState("");
@@ -50,6 +51,7 @@ function App() {
           <Route path="/transcript/:videoId" element={<ProtectedRoute user={user}><TranscriptPage /></ProtectedRoute>} />
           <Route path="/summary" element={<ProtectedRoute user={user}><SummaryPage /></ProtectedRoute>} />
           <Route path="/history" element={<ProtectedRoute user={user}><HistoryPage /></ProtectedRoute>} />
+          <Route path="/feedback" element={<ProtectedRoute user={user}><FeedbackPage /></ProtectedRoute>} />
         </Routes>
       </main>
       <footer className="footer">

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Sparkles, Video, BookOpen, ChevronLeft, CheckCircle2, XCircle, Lightbulb, PlayCircle, Heart } from "lucide-react";
+import { Sparkles, Video, BookOpen, ChevronLeft, CheckCircle2, XCircle, Lightbulb, PlayCircle, Heart, RotateCcw, RotateCw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "react-hot-toast";
 import CONFIG, { fetchAuth } from "../utils/config";
@@ -25,6 +25,13 @@ function SummaryPage() {
     const [taskId, setTaskId] = useState(null);
     const [analysis, setAnalysis] = useState("");
     const [activeTab, setActiveTab] = useState("analysis");
+    const videoRef = useRef(null);
+
+    const skipTime = (amount) => {
+        if (videoRef.current) {
+            videoRef.current.currentTime += amount;
+        }
+    };
 
     useEffect(() => {
         const fetchSummary = async () => {
@@ -433,7 +440,56 @@ function SummaryPage() {
                             </div>
                         ) : videoUrl ? (
                             <div style={{ borderRadius: '1rem', overflow: 'hidden', border: '1px solid var(--glass-border)', boxShadow: '0 10px 40px rgba(0,0,0,0.5)' }}>
-                                <video width="100%" controls src={videoUrl} style={{ display: 'block' }}></video>
+                                <video ref={videoRef} width="100%" controls src={videoUrl} style={{ display: 'block' }}></video>
+                                <div style={{ 
+                                    display: 'flex', 
+                                    justifyContent: 'center', 
+                                    gap: '1.5rem', 
+                                    padding: '1rem', 
+                                    background: 'rgba(255,255,255,0.03)',
+                                    borderTop: '1px solid var(--glass-border)'
+                                }}>
+                                    <motion.button 
+                                        whileHover={{ scale: 1.05 }}
+                                        whileTap={{ scale: 0.95 }}
+                                        onClick={() => skipTime(-5)}
+                                        style={{ 
+                                            background: 'rgba(255,255,255,0.05)', 
+                                            border: '1px solid var(--glass-border)', 
+                                            color: 'var(--fg-muted)', 
+                                            padding: '0.5rem 1rem', 
+                                            borderRadius: '0.75rem',
+                                            cursor: 'pointer',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '0.5rem',
+                                            fontSize: '0.9rem',
+                                            fontWeight: 600
+                                        }}
+                                    >
+                                        <RotateCcw size={16} /> -5s
+                                    </motion.button>
+                                    <motion.button 
+                                        whileHover={{ scale: 1.05 }}
+                                        whileTap={{ scale: 0.95 }}
+                                        onClick={() => skipTime(5)}
+                                        style={{ 
+                                            background: 'rgba(255,255,255,0.05)', 
+                                            border: '1px solid var(--glass-border)', 
+                                            color: 'var(--fg-muted)', 
+                                            padding: '0.5rem 1rem', 
+                                            borderRadius: '0.75rem',
+                                            cursor: 'pointer',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '0.5rem',
+                                            fontSize: '0.9rem',
+                                            fontWeight: 600
+                                        }}
+                                    >
+                                        <RotateCw size={16} /> +5s
+                                    </motion.button>
+                                </div>
                             </div>
                         ) : (
                             <button

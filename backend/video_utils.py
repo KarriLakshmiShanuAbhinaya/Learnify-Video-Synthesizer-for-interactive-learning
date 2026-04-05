@@ -10,38 +10,14 @@ from PIL import Image, ImageDraw, ImageFont
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
 from pydub import AudioSegment
 from avatar_service import create_classroom_slide
+from image_service import ImageService
 
-UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
+# UNSPLASH_ACCESS_KEY is now handled by image_service.py
 DEFAULT_IMAGE = "default.png" 
 
-def download_image(url):
-    try:
-        if not url: return None
-        img_data = requests.get(url, timeout=5).content
-        tmp_img = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-        with open(tmp_img.name, "wb") as f:
-            f.write(img_data)
-        return tmp_img.name
-    except:
-        return None
-
 def fetch_topic_images(keyword, count=15):
-    """Fetch multiple images in parallel."""
-    images = []
-    urls = []
-    try:
-        url = f"https://api.unsplash.com/search/photos?query={keyword}&orientation=landscape&per_page={count}&client_id={UNSPLASH_ACCESS_KEY}"
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            urls = [item["urls"]["regular"] for item in data.get("results", [])]
-    except Exception as e:
-        print("Unsplash API Error:", e)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        results = executor.map(download_image, urls)
-        images = [r for r in results if r]
-
+    """Fetch multiple images using the configured engine in ImageService."""
+    images = ImageService.fetch_topic_images(keyword, count)
     return images if images else [DEFAULT_IMAGE]
 
 def generate_tts_audio(text, speed=False):

@@ -144,6 +144,10 @@ class VideoRequest(BaseModel):
 class MCQRequest(BaseModel):
     text: str = Field(..., min_length=10, max_length=50000)
 
+class FeedbackRequest(BaseModel):
+    content: str = Field(..., min_length=5, max_length=1000)
+    rating: Optional[int] = Field(default=5, ge=1, le=5)
+
 # Fix 8: Proper evaluate models
 class AnswerItem(BaseModel):
     question: str
@@ -617,6 +621,27 @@ def evaluate(data: EvaluateRequest):
         "results": results,
         "analysis": analysis
     }
+
+# ─────────────────────────────────────────────
+# Feedback Routes
+# ─────────────────────────────────────────────
+
+@app.post("/feedback")
+def submit_feedback(data: FeedbackRequest, user=Depends(verify_jwt)):
+    db = get_db()
+    cur = db.cursor()
+    try:
+        user_id = user["id"]
+        username = user["username"]
+        cur.execute(
+            "INSERT INTO feedback (user_id, username, content, rating) VALUES (%s, %s, %s, %s)",
+            (user_id, username, data.content, data.rating),
+        )
+        db.commit()
+        return {"message": "Feedback submitted successfully"}
+    finally:
+        cur.close()
+        db.close()
 
 # ─────────────────────────────────────────────
 # Run

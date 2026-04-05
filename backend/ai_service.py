@@ -49,7 +49,7 @@ def query_ollama(topic):
     
     prompt = f"""
     You are an expert educational content writer. Generate a comprehensive educational script for "{topic}". 
-    Target length: at least 1000 words. Proceed with whatever length is generated if it falls short.
+    Target length: between 2000 and 3000 words. Provide extreme detail for each section to ensure deep understanding.
     {context_instruction}
     
     Follow this structure strictly with these exact header labels:
@@ -89,7 +89,7 @@ def query_ollama(topic):
                 "prompt": prompt,
                 "stream": False
             },
-            timeout=300
+            timeout=600
         )
         response.raise_for_status()
         output = response.json().get("response", "").strip()
