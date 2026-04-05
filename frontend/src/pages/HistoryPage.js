@@ -168,34 +168,43 @@ function HistoryPage() {
                             style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minHeight: '200px', cursor: 'pointer' }}
                             onClick={() => navigate("/summary", { state: { keyword: item.query, historyId: item.id } })}
                         >
-                            <div>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
-                                    <div style={{
-                                        padding: '0.4rem 0.8rem',
-                                        background: 'rgba(139, 92, 246, 0.1)',
-                                        border: '1px solid rgba(139, 92, 246, 0.2)',
-                                        borderRadius: '2rem',
-                                        fontSize: '0.8rem',
-                                        color: '#1e1b4b',
-                                        fontWeight: 600
-                                    }}>
-                                        Technical Summary
-                                    </div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                        <motion.button
-                                            whileHover={{ scale: 1.2 }}
-                                            whileTap={{ scale: 0.9 }}
-                                            onClick={(e) => toggleFavorite(e, item.id)}
-                                            style={{ background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex' }}
-                                        >
-                                            <Heart size={20} color={item.is_favorite ? "#ef4444" : "var(--fg-muted)"} fill={item.is_favorite ? "#ef4444" : "none"} />
-                                        </motion.button>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--fg-muted)', fontSize: '0.8rem' }}>
-                                            <Calendar size={14} /> {item.time ? new Date(item.time).toLocaleDateString() : 'Recent'}
+                            <div style={{ position: 'relative' }}>
+                                {item.thumbnail_url ? (
+                                    <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', overflow: 'hidden', borderRadius: '1rem', marginBottom: '1.25rem' }}>
+                                        <img src={item.thumbnail_url} alt={item.query} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                        <div style={{ position: 'absolute', bottom: '0.75rem', right: '0.75rem', background: 'rgba(0,0,0,0.6)', padding: '0.25rem 0.5rem', borderRadius: '0.4rem', color: 'white', fontSize: '0.7rem' }}>
+                                            Learning Summary
                                         </div>
                                     </div>
+                                ) : (
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+                                        <div style={{
+                                            padding: '0.4rem 0.8rem',
+                                            background: 'rgba(139, 92, 246, 0.1)',
+                                            border: '1px solid rgba(139, 92, 246, 0.2)',
+                                            borderRadius: '2rem',
+                                            fontSize: '0.8rem',
+                                            color: '#8b5cf6',
+                                            fontWeight: 600
+                                        }}>
+                                            Technical Summary
+                                        </div>
+                                    </div>
+                                )}
+                                <div style={{ position: 'absolute', top: 0, right: 0, padding: '0.5rem' }}>
+                                     <motion.button
+                                        whileHover={{ scale: 1.2 }}
+                                        whileTap={{ scale: 0.9 }}
+                                        onClick={(e) => toggleFavorite(e, item.id)}
+                                        style={{ background: 'rgba(0,0,0,0.3)', backdropFilter: 'blur(4px)', border: 'none', cursor: 'pointer', display: 'flex', padding: '0.5rem', borderRadius: '50%' }}
+                                    >
+                                        <Heart size={18} color={item.is_favorite ? "#ef4444" : "white"} fill={item.is_favorite ? "#ef4444" : "none"} />
+                                    </motion.button>
                                 </div>
-                                <h3 style={{ fontSize: '1.25rem', marginBottom: '1rem' }}>{item.query}</h3>
+                                <h3 style={{ fontSize: '1.25rem', marginBottom: '0.5rem', lineClamp: 2, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{item.query}</h3>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--fg-muted)', fontSize: '0.8rem', marginBottom: '1rem' }}>
+                                    <Calendar size={14} /> {item.time ? new Date(item.time).toLocaleDateString() : 'Recent'}
+                                </div>
                             </div>
 
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1.5rem' }}>

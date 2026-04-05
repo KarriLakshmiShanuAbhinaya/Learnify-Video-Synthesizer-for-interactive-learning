@@ -113,6 +113,12 @@ class AddSearchRequest(BaseModel):
     username: str = Field(..., max_length=50)
     email: EmailStr
     searches: str = Field(..., max_length=500)
+    thumbnail_url: Optional[str] = Field(None, max_length=512)
+
+class UpdateHistoryRequest(BaseModel):
+    historyId: int
+    thumbnail_url: Optional[str] = None
+    query: Optional[str] = None
 
 class ToggleFavoriteRequest(BaseModel):
     historyId: int
@@ -204,6 +210,21 @@ def login(data: LoginRequest):
         }
     return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
 
+@app.post("/update_history")
+def update_history(data: UpdateHistoryRequest, _user=Depends(verify_jwt)):
+    db = get_db()
+    cur = db.cursor()
+    try:
+        if data.thumbnail_url:
+            cur.execute("UPDATE search_history SET thumbnail_url = %s WHERE id = %s", (data.thumbnail_url, data.historyId))
+        if data.query:
+            cur.execute("UPDATE search_history SET query = %s WHERE id = %s", (data.query, data.historyId))
+        db.commit()
+        return {"message": "History updated"}
+    finally:
+        cur.close()
+        db.close()
+
 # ─────────────────────────────────────────────
 # Search & History Routes
 # ─────────────────────────────────────────────
@@ -215,8 +236,8 @@ def add_search(data: AddSearchRequest, _user=Depends(verify_jwt)):
     try:
         timestamp = datetime.now()
         cur.execute(
-            "INSERT INTO search_history (username, email, query, timestamp) VALUES (%s, %s, %s, %s)",
-            (data.username, data.email, data.searches, timestamp),
+            "INSERT INTO search_history (username, email, query, timestamp, thumbnail_url) VALUES (%s, %s, %s, %s, %s)",
+            (data.username, data.email, data.searches, timestamp, data.thumbnail_url),
         )
         history_id = cur.lastrowid
         db.commit()
@@ -240,7 +261,7 @@ def get_history(
     try:
         cur.execute(
             """SELECT id, query, timestamp, video_filename, quiz_json,
-                      quiz_score, quiz_total, is_favorite
+                      quiz_score, quiz_total, is_favorite, thumbnail_url
                FROM search_history
                WHERE username=%s AND email=%s
                ORDER BY timestamp DESC
@@ -263,6 +284,7 @@ def get_history(
             "quiz_score": row["quiz_score"],
             "quiz_total": row["quiz_total"],
             "is_favorite": bool(row["is_favorite"]),
+            "thumbnail_url": row["thumbnail_url"],
         })
     return history
 
@@ -292,14 +314,18 @@ def search_videos(q: str = Query(..., min_length=1, description="Search query"))
         raise HTTPException(status_code=503, detail="YouTube API not configured")
     try:
         res = youtube_client.search().list(q=q, part="snippet", type="video", maxResults=15).execute()
-        return [
-            {
-                "videoId": item["id"]["videoId"],
-                "title": item["snippet"]["title"],
-                "thumbnail": item["snippet"]["thumbnails"]["high"]["url"],
-            }
-            for item in res.get("items", [])
-        ]
+        results = []
+        for item in res.get("items", []):
+            video_id = item.get("id", {}).get("videoId")
+            if not video_id:
+                continue
+                
+            results.append({
+                "videoId": video_id,
+                "title": item.get("snippet", {}).get("title", "No Title"),
+                "thumbnail": item.get("snippet", {}).get("thumbnails", {}).get("high", {}).get("url", ""),
+            })
+        return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

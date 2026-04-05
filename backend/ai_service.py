@@ -48,7 +48,7 @@ def query_ollama(topic):
     structure = "Definition :, Syntax:, Types:, Uses:, Simple Example:, Advantages:, Disadvantages:"
     
     prompt = f"""
-    Generate a comprehensive educational script for "{topic}". 
+    You are an expert educational content writer. Generate a comprehensive educational script for "{topic}". 
     Target length: at least 1000 words. Proceed with whatever length is generated if it falls short.
     {context_instruction}
     
@@ -74,6 +74,7 @@ def query_ollama(topic):
     Disadvantages:
     (List the drawbacks)
 
+    Output ONLY the content using the headers above. DO NOT include any introductory or concluding remarks, and DO NOT repeat these instructions in your final output.
     CRITICAL FORMATTING RULES:
     1. DO NOT use asterisks (*), double asterisks (**), underscores (_), or backquotes (`) anywhere in the output.
     2. For sections that require lists (Types, Uses, Advantages, Disadvantages), use numeric labels like "1.", "2.", "3." etc.
@@ -81,17 +82,30 @@ def query_ollama(topic):
     4. Provide the content in plain text format only. No markdown formatting for bold, italic, or code blocks.
     """
     try:
-        result = subprocess.run(["ollama", "run", "gemma:2b"], input=prompt.encode("utf-8"), capture_output=True, timeout=600)
-        output = result.stdout.decode("utf-8", errors="ignore").strip()
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "gemma:2b",
+                "prompt": prompt,
+                "stream": False
+            },
+            timeout=300
+        )
+        response.raise_for_status()
+        output = response.json().get("response", "").strip()
         
         # Post-processing: Forcefully remove common markdown symbols as requested by user for TTS safety
-        if output and not output.startswith("Error:"):
+        if output:
+            # Remove any trailing prompt leakage (cases where LLM repeats instruction block)
+            if "CRITICAL FORMATTING RULES" in output:
+                output = output.split("CRITICAL FORMATTING RULES")[0].strip()
+            
             # Remove asterisks, backquotes, and underscores
             output = re.sub(r'[*_`]', '', output)
             # Ensure multiple newlines are normalized but kept for paragraph splitting
             output = re.sub(r'\n{3,}', '\n\n', output)
             
-        return output or "Error: Empty output"
+        return output or "Error: The model returned no content"
     except Exception as e:
         return f"Error: {e}"
 
@@ -108,7 +122,11 @@ def generate_mcqs(text, num_questions=10, previous_analysis=None):
     keywords = extract_keywords(text)
     mcqs = []
     
-    if not keywords or not sentences: return []
+    if not keywords or not sentences:
+        # Fallback: if no keywords found/extracted, try a simpler approach
+        common_words = ["is", "the", "and", "data", "system", "code"]
+        keywords = list(set(keywords + common_words))
+        if not sentences: return []
 
     # Adaptive Logic: Extract focus keywords from previous analysis if available
     focus_keywords = []
@@ -168,8 +186,17 @@ def evaluate_explanation(question, selected, correct):
     Tone: educational, 3-5 sentences, plain text.
     """
     try:
-        result = subprocess.run(["ollama", "run", "gemma:2b"], input=prompt.encode("utf-8"), capture_output=True)
-        return result.stdout.decode("utf-8", errors="ignore").strip()
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "gemma:2b",
+                "prompt": prompt,
+                "stream": False
+            },
+            timeout=60
+        )
+        response.raise_for_status()
+        return response.json().get("response", "").strip()
     except Exception as e:
         return f"Could not generate feedback: {e}"
 
@@ -206,7 +233,16 @@ def generate_performance_analysis(topic, answers_data):
     Format: Use the exact headers "Strengths", "Areas for Improvement", "Recommended Topics", and "Learning Path". Use bullet points for steps. No bold or italic markdown.
     """
     try:
-        result = subprocess.run(["ollama", "run", "gemma:2b"], input=prompt.encode("utf-8"), capture_output=True, timeout=300)
-        return result.stdout.decode("utf-8", errors="ignore").strip()
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "gemma:2b",
+                "prompt": prompt,
+                "stream": False
+            },
+            timeout=180
+        )
+        response.raise_for_status()
+        return response.json().get("response", "").strip()
     except Exception as e:
         return f"Error generating performance analysis: {e}"

@@ -31,15 +31,16 @@ function SearchPage({ query, setQuery, videos, setVideos, error, setError }) {
                 setSuggestions([]);
                 return;
             }
+            // Disabling due to CORS issues on the client-side. 
+            /*
             try {
-                // Using Google's autocomplete API (JSONP-like but can be used with a proxy or direct if CORS allows, 
-                // typically for demo/client-side it's common to use this or a similar service)
                 const res = await fetch(`https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(query)}`);
                 const data = await res.json();
                 setSuggestions(data[1] || []);
             } catch (err) {
                 console.error("Suggestion fetch failed", err);
             }
+            */
         };
 
         const timeoutId = setTimeout(fetchSuggestions, 300);
@@ -70,17 +71,23 @@ function SearchPage({ query, setQuery, videos, setVideos, error, setError }) {
 
             const res = await fetch(`${CONFIG.API_BASE_URL}/search?q=${encodeURIComponent(searchQuery)}`);
             const data = await res.json();
-            if (data.error) {
-                setError(data.error);
+
+            if (!res.ok) {
+                setError(data.detail || data.error || "Search failed");
                 setVideos([]);
-            } else {
+            } else if (Array.isArray(data)) {
                 setVideos(data);
                 setError("");
                 setSelected([]);
+            } else {
+                setError("Unexpected response from server");
+                setVideos([]);
+                console.error("Non-array search results:", data);
             }
-        } catch {
-            setError("Failed to fetch videos");
+        } catch (err) {
+            setError("Failed to connect to the server");
             setVideos([]);
+            console.error("Search fetch error:", err);
         } finally {
             setIsSearching(false);
         }
@@ -90,8 +97,25 @@ function SearchPage({ query, setQuery, videos, setVideos, error, setError }) {
         setSelected((prev) => prev.includes(videoId) ? prev.filter((id) => id !== videoId) : [...prev, videoId]);
     };
 
-    const handleSummary = () => {
+    const handleSummary = async () => {
         if (selected.length > 0) {
+            // Update history with selected video thumbnail
+            const firstSelectedVideo = videos.find(v => v.videoId === selected[0]);
+            if (currentHistoryId && firstSelectedVideo) {
+                try {
+                    await fetchAuth(`${CONFIG.API_BASE_URL}/update_history`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ 
+                            historyId: currentHistoryId, 
+                            thumbnail_url: firstSelectedVideo.thumbnail 
+                        }),
+                    });
+                } catch (err) {
+                    console.error("Failed to update history thumbnail:", err);
+                }
+            }
+
             navigate("/summary", {
                 state: {
                     videoIds: selected,
@@ -279,7 +303,7 @@ function SearchPage({ query, setQuery, videos, setVideos, error, setError }) {
                 gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
                 gap: '1.5rem'
             }}>
-                {videos.map((video, index) => (
+                {Array.isArray(videos) && videos.map((video, index) => (
                     <motion.div
                         key={video.videoId}
                         initial={{ opacity: 0, y: 20 }}

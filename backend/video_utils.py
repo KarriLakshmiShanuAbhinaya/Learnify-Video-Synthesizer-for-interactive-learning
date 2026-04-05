@@ -241,8 +241,8 @@ def create_video_from_summary(text, keyword):
 
     final_video = concatenate_videoclips(video_clips, method="compose", padding=-0.2)
     
-    # 5. Loop to 10 minutes (600 seconds) as requested by user
-    target_duration = 600
+    # 5. Loop to 1 minute (60 seconds) for stability
+    target_duration = 60
     current_duration = final_video.duration
     if current_duration > 0 and current_duration < target_duration:
         n_loops = int(target_duration // current_duration) + 1

@@ -98,6 +98,7 @@ function SummaryPage() {
     }, [taskId]);
 
     const generateVideo = async () => {
+        if (videoLoading || videoUrl) return; // Prevent double trigger
         setVideoLoading(true);
         const t = toast.loading("AI is synthesizing your learning video...");
         try {
@@ -120,8 +121,14 @@ function SummaryPage() {
             if (data.task_id) {
                 setTaskId(data.task_id);
                 toast.dismiss(t); // Task polling will take over notifications
+            } else {
+                // No task_id or video_url returned
+                setVideoLoading(false);
+                toast.dismiss(t);
+                toast.error("Video synthesis failed to start.");
             }
-        } catch { 
+        } catch (err) { 
+            console.error("Video gen error:", err);
             toast.error("Failed to generate video"); 
             setVideoLoading(false);
             toast.dismiss(t);
@@ -136,6 +143,10 @@ function SummaryPage() {
                 body: JSON.stringify({ text: summaryText }),
             });
             const data = await res.json();
+            if (!data || data.length === 0) {
+                toast.error("AI could not generate questions for this summary.");
+                return;
+            }
             setMcqs(data);
             setAnswers(Array(data.length).fill(""));
             setSubmitted(false);
