@@ -75,13 +75,22 @@ function SummaryPage() {
         if (summaryText && !videoUrl && !videoLoading && !error && !taskId) generateVideo();
     }, [summaryText, error]);
 
-    // Fix 11: Polling with cleanup
+    // Fix 11: Polling with cleanup and robust error handling
     useEffect(() => {
         if (!taskId) return;
 
+        let errorCount = 0;
         const pollInterval = setInterval(async () => {
             try {
                 const statusRes = await fetchAuth(`${CONFIG.API_BASE_URL}/video/status/${taskId}`);
+                
+                // If it hangs safely or returns 401 wrapper
+                if (!statusRes) return;
+
+                if (!statusRes.ok) {
+                    throw new Error(`HTTP error! status: ${statusRes.status}`);
+                }
+
                 const statusData = await statusRes.json();
                 
                 if (statusData.status === "completed") {
@@ -98,6 +107,13 @@ function SummaryPage() {
                 }
             } catch (e) {
                 console.error("Polling error", e);
+                errorCount++;
+                if (errorCount >= 3) {
+                    clearInterval(pollInterval);
+                    toast.error("Connection lost during video synthesis.");
+                    setVideoLoading(false);
+                    setTaskId(null);
+                }
             }
         }, 3000);
 

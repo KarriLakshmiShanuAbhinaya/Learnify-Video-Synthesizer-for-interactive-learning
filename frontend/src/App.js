@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { BrowserRouter as Router, Route, Routes, Navigate } from "react-router-dom";
 import "./styles.css";
 
@@ -13,45 +13,37 @@ import SearchPage from "./pages/SearchPage";
 import HistoryPage from "./pages/HistoryPage";
 import TranscriptPage from "./pages/TranscriptPage";
 import SummaryPage from "./pages/SummaryPage";
-import FeedbackPage from "./pages/FeedbackPage";
+import CodePracticePage from "./pages/CodePracticePage";
+import { useAppContext } from "./context/AppContext";
 
 function App() {
-  const [query, setQuery] = useState("");
-  const [videos, setVideos] = useState([]);
-  const [error, setError] = useState("");
-  const [user, setUser] = useState(() => localStorage.getItem("username"));
-  const [theme, setTheme] = useState(() => localStorage.getItem("theme") || "dark");
-
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("theme", theme);
-  }, [theme]);
-
-  const toggleTheme = () => {
-    setTheme(prev => prev === "dark" ? "light" : "dark");
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem("user");
-    localStorage.removeItem("username");
-    localStorage.removeItem("email");
-    localStorage.removeItem("token");
-    setUser(null);
-  };
+  const {
+    query,
+    setQuery,
+    videos,
+    setVideos,
+    error,
+    setError,
+    user,
+    theme,
+    toggleTheme,
+    login,
+    logout,
+  } = useAppContext();
 
   return (
     <Router>
       <Toaster position="top-right" />
-      <Navbar user={user} onLogout={handleLogout} theme={theme} toggleTheme={toggleTheme} />
+      <Navbar user={user} onLogout={logout} theme={theme} toggleTheme={toggleTheme} />
       <main className="container">
         <Routes>
-          <Route path="/login" element={<LoginPage setUser={setUser} />} />
+          <Route path="/login" element={<LoginPage setUser={login} />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/" element={<ProtectedRoute user={user}><SearchPage query={query} setQuery={setQuery} videos={videos} setVideos={setVideos} error={error} setError={setError} /></ProtectedRoute>} />
           <Route path="/transcript/:videoId" element={<ProtectedRoute user={user}><TranscriptPage /></ProtectedRoute>} />
           <Route path="/summary" element={<ProtectedRoute user={user}><SummaryPage /></ProtectedRoute>} />
           <Route path="/history" element={<ProtectedRoute user={user}><HistoryPage /></ProtectedRoute>} />
-          <Route path="/feedback" element={<ProtectedRoute user={user}><FeedbackPage /></ProtectedRoute>} />
+          <Route path="/practice" element={<ProtectedRoute user={user}><CodePracticePage /></ProtectedRoute>} />
         </Routes>
       </main>
       <footer className="footer">

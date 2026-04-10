@@ -1,6 +1,6 @@
 import React from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { LogOut, History, User, Search, Youtube, Sun, Moon, MessageSquare } from "lucide-react";
+import { LogOut, History, User, Search, Youtube, Sun, Moon, Code } from "lucide-react";
 import { motion } from "framer-motion";
 
 function Navbar({ user, onLogout, theme, toggleTheme }) {
@@ -54,8 +54,8 @@ function Navbar({ user, onLogout, theme, toggleTheme }) {
                         <Link to="/history" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none', color: 'var(--fg-main)', fontWeight: 600 }}>
                             <History size={18} /> History
                         </Link>
-                        <Link to="/feedback" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none', color: 'var(--fg-main)', fontWeight: 600 }}>
-                            <MessageSquare size={18} /> Feedback
+                        <Link to="/practice" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none', color: 'var(--fg-main)', fontWeight: 600 }}>
+                            <Code size={18} /> Code Practice
                         </Link>
                         <div style={{ height: '1.5rem', width: '1px', background: 'var(--glass-border)' }}></div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--fg-main)' }}>

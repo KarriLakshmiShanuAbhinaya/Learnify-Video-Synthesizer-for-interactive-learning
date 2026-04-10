@@ -4,6 +4,9 @@ import shutil
 import uuid
 import json
 import concurrent.futures
+import subprocess
+import tempfile
+import sqlite3
 from datetime import datetime, timedelta
 from threading import Lock
 from typing import Optional, List
@@ -13,7 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, EmailStr
-from mysql.connector.errors import PoolError
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError, TimeoutError
 from dotenv import load_dotenv
 import jwt as pyjwt
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -22,7 +26,8 @@ from googleapiclient.discovery import build
 load_dotenv()
 
 # Modular imports
-from database import get_db
+from orm.session import get_session, SessionLocal
+from orm.models import User, SearchHistory
 from video_utils import create_video_from_summary
 from ai_service import query_ollama, generate_mcqs, evaluate_explanation, generate_performance_analysis
 
@@ -39,7 +44,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Fix 3: Fail loudly if secrets are missing in production
 try:
     SECRET_KEY = os.environ["SECRET_KEY"]
     JWT_SECRET_KEY = os.environ["JWT_SECRET_KEY"]
@@ -58,12 +62,10 @@ VIDEO_STORAGE_DIR = os.path.join(os.getcwd(), "video_storage")
 if not os.path.exists(VIDEO_STORAGE_DIR):
     os.makedirs(VIDEO_STORAGE_DIR)
 
-# Fix 7: Thread-safe video task registry using Lock
 _video_tasks_lock = Lock()
 video_tasks: dict = {}
 video_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
-# Fix 6: Build YouTube client ONCE at startup (not per request)
 youtube_client = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=YOUTUBE_API_KEY) if YOUTUBE_API_KEY else None
 
 # ─────────────────────────────────────────────
@@ -85,7 +87,6 @@ def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
     except pyjwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-# Fix 2: Mutable default argument fixed (dict={} → None)
 def create_access_token(identity: str, extra_claims: dict = None) -> str:
     """Create a signed JWT token."""
     extra_claims = extra_claims or {}
@@ -98,7 +99,7 @@ def create_access_token(identity: str, extra_claims: dict = None) -> str:
     return pyjwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 # ─────────────────────────────────────────────
-# Pydantic Request Models  (Fix 4: Field validators)
+# Pydantic Request Models
 # ─────────────────────────────────────────────
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=2, max_length=50)
@@ -144,11 +145,6 @@ class VideoRequest(BaseModel):
 class MCQRequest(BaseModel):
     text: str = Field(..., min_length=10, max_length=50000)
 
-class FeedbackRequest(BaseModel):
-    content: str = Field(..., min_length=5, max_length=1000)
-    rating: Optional[int] = Field(default=5, ge=1, le=5)
-
-# Fix 8: Proper evaluate models
 class AnswerItem(BaseModel):
     question: str
     selected: str
@@ -159,98 +155,70 @@ class EvaluateRequest(BaseModel):
     answers: List[AnswerItem]
     historyId: Optional[int] = None
 
-# ─────────────────────────────────────────────
-# Helper: Dict cursor
-# ─────────────────────────────────────────────
-def dict_cursor(db):
-    """Return a cursor that gives rows as dicts instead of tuples."""
-    return db.cursor(dictionary=True)
+class ExecuteCodeRequest(BaseModel):
+    language: str = Field(..., max_length=20)
+    code: str = Field(..., min_length=1, max_length=100000)
 
 # ─────────────────────────────────────────────
 # Authentication Routes
 # ─────────────────────────────────────────────
 
 @app.post("/register")
-def register(data: RegisterRequest):
-    db = get_db()
-    cur = dict_cursor(db)
-    try:
-        cur.execute("SELECT id FROM users WHERE email = %s", (data.email,))
-        if cur.fetchone():
-            return JSONResponse(status_code=400, content={"error": "Email already registered"})
-        hashed_pw = generate_password_hash(data.password)
-        cur.execute(
-            "INSERT INTO users (username, email, password) VALUES (%s, %s, %s)",
-            (data.username, data.email, hashed_pw),
-        )
-        db.commit()
-        return {"message": "Registration successful"}
-    finally:
-        cur.close()
-        db.close()
+def register(data: RegisterRequest, db: Session = Depends(get_session)):
+    user = db.query(User).filter(User.email == data.email).first()
+    if user:
+        return JSONResponse(status_code=400, content={"error": "Email already registered"})
+    hashed_pw = generate_password_hash(data.password)
+    new_user = User(username=data.username, email=data.email, password=hashed_pw)
+    db.add(new_user)
+    db.commit()
+    return {"message": "Registration successful"}
 
 @app.post("/login")
-def login(data: LoginRequest):
-    db = get_db()
-    cur = dict_cursor(db)
-    try:
-        # Fix 5: dict cursor — access by column name, not index
-        cur.execute("SELECT id, username, email, password FROM users WHERE email = %s", (data.email,))
-        user = cur.fetchone()
-    finally:
-        cur.close()
-        db.close()
-
-    if user and check_password_hash(user["password"], data.password):
+def login(data: LoginRequest, db: Session = Depends(get_session)):
+    user = db.query(User).filter(User.email == data.email).first()
+    if user and check_password_hash(user.password, data.password):
         token = create_access_token(
-            identity=str(user["email"]),
-            extra_claims={"id": user["id"], "username": user["username"], "email": user["email"]},
+            identity=str(user.email),
+            extra_claims={"id": user.id, "username": user.username, "email": user.email},
         )
         return {
             "message": "Login successful",
-            "username": user["username"],
-            "email": user["email"],
+            "username": user.username,
+            "email": user.email,
             "token": token,
         }
     return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
 
+
 @app.post("/update_history")
-def update_history(data: UpdateHistoryRequest, _user=Depends(verify_jwt)):
-    db = get_db()
-    cur = db.cursor()
-    try:
+def update_history(data: UpdateHistoryRequest, _user=Depends(verify_jwt), db: Session = Depends(get_session)):
+    history = db.query(SearchHistory).filter(SearchHistory.id == data.historyId).first()
+    if history:
         if data.thumbnail_url:
-            cur.execute("UPDATE search_history SET thumbnail_url = %s WHERE id = %s", (data.thumbnail_url, data.historyId))
+            history.thumbnail_url = data.thumbnail_url
         if data.query:
-            cur.execute("UPDATE search_history SET query = %s WHERE id = %s", (data.query, data.historyId))
+            history.query = data.query
         db.commit()
-        return {"message": "History updated"}
-    finally:
-        cur.close()
-        db.close()
+    return {"message": "History updated"}
 
 # ─────────────────────────────────────────────
 # Search & History Routes
 # ─────────────────────────────────────────────
 
 @app.post("/add_search")
-def add_search(data: AddSearchRequest, _user=Depends(verify_jwt)):
-    db = get_db()
-    cur = db.cursor()
-    try:
-        timestamp = datetime.now()
-        cur.execute(
-            "INSERT INTO search_history (username, email, query, timestamp, thumbnail_url) VALUES (%s, %s, %s, %s, %s)",
-            (data.username, data.email, data.searches, timestamp, data.thumbnail_url),
-        )
-        history_id = cur.lastrowid
-        db.commit()
-        return {"message": "Search added", "historyId": history_id}
-    finally:
-        cur.close()
-        db.close()
+def add_search(data: AddSearchRequest, _user=Depends(verify_jwt), db: Session = Depends(get_session)):
+    new_search = SearchHistory(
+        username=data.username,
+        email=data.email,
+        query=data.searches,
+        thumbnail_url=data.thumbnail_url
+    )
+    db.add(new_search)
+    db.commit()
+    db.refresh(new_search)
+    return {"message": "Search added", "historyId": new_search.id}
 
-# Fix 9: Pagination added (page & limit query params, backwards-compatible)
 @app.get("/get_history")
 def get_history(
     username: str = Query(...),
@@ -258,59 +226,37 @@ def get_history(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=100),
     _user=Depends(verify_jwt),
+    db: Session = Depends(get_session)
 ):
     offset = (page - 1) * limit
-    db = get_db()
-    cur = dict_cursor(db)
-    try:
-        cur.execute(
-            """SELECT id, query, timestamp, video_filename, quiz_json,
-                      quiz_score, quiz_total, is_favorite, thumbnail_url
-               FROM search_history
-               WHERE username=%s AND email=%s
-               ORDER BY timestamp DESC
-               LIMIT %s OFFSET %s""",
-            (username, email, limit, offset),
-        )
-        rows = cur.fetchall()
-    finally:
-        cur.close()
-        db.close()
-
-    history = []
-    for row in rows:
-        history.append({
-            "id": row["id"],
-            "query": row["query"],
-            "time": row["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if row["timestamp"] else "",
-            "video_filename": row["video_filename"],
-            "quiz_json": row["quiz_json"],
-            "quiz_score": row["quiz_score"],
-            "quiz_total": row["quiz_total"],
-            "is_favorite": bool(row["is_favorite"]),
-            "thumbnail_url": row["thumbnail_url"],
-        })
-    return history
+    histories = db.query(SearchHistory).filter(
+        SearchHistory.username == username,
+        SearchHistory.email == email
+    ).order_by(SearchHistory.timestamp.desc()).offset(offset).limit(limit).all()
+    
+    return [
+        {
+            "id": h.id,
+            "query": h.query,
+            "time": h.timestamp.strftime("%Y-%m-%d %H:%M:%S") if h.timestamp else "",
+            "video_filename": h.video_filename,
+            "quiz_json": h.quiz_json,
+            "quiz_score": h.quiz_score,
+            "quiz_total": h.quiz_total,
+            "is_favorite": bool(h.is_favorite),
+            "thumbnail_url": h.thumbnail_url,
+        }
+        for h in histories
+    ]
 
 @app.post("/toggle_favorite")
-def toggle_favorite(data: ToggleFavoriteRequest, _user=Depends(verify_jwt)):
-    db = get_db()
-    cur = dict_cursor(db)
-    try:
-        cur.execute("SELECT is_favorite FROM search_history WHERE id = %s", (data.historyId,))
-        row = cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Not found")
-        new_status = not bool(row["is_favorite"])
-        cur.execute(
-            "UPDATE search_history SET is_favorite = %s WHERE id = %s",
-            (new_status, data.historyId),
-        )
-        db.commit()
-        return {"message": "Toggled favorite", "is_favorite": new_status}
-    finally:
-        cur.close()
-        db.close()
+def toggle_favorite(data: ToggleFavoriteRequest, _user=Depends(verify_jwt), db: Session = Depends(get_session)):
+    history = db.query(SearchHistory).filter(SearchHistory.id == data.historyId).first()
+    if not history:
+        raise HTTPException(status_code=404, detail="Not found")
+    history.is_favorite = 0 if history.is_favorite else 1
+    db.commit()
+    return {"message": "Toggled favorite", "is_favorite": bool(history.is_favorite)}
 
 @app.get("/search")
 def search_videos(q: str = Query(..., min_length=1, description="Search query")):
@@ -338,91 +284,60 @@ def search_videos(q: str = Query(..., min_length=1, description="Search query"))
 # ─────────────────────────────────────────────
 
 @app.post("/summary")
-def summary(data: SummaryRequest, user=Depends(verify_jwt)):
+def summary(data: SummaryRequest, user=Depends(verify_jwt), db: Session = Depends(get_session)):
     keyword = data.keyword
     history_id = data.historyId
     user_email = user["email"]
 
-    # Step 1: Check cache and get basic info (Quick)
-    db = get_db()
-    cur = dict_cursor(db)
     summary_text = None
     cached_quiz = None
     is_favorite = False
     previous_performance = None
-    try:
-        # Get cached summary from ANY record
-        cur.execute(
-            "SELECT summary FROM search_history WHERE query = %s AND summary IS NOT NULL ORDER BY timestamp DESC LIMIT 1",
-            (keyword,),
-        )
-        cached = cur.fetchone()
-        if cached:
-            summary_text = cached["summary"]
 
-        # Check for user's previous attempt on this SAME topic to find weak areas
-        cur.execute(
-            """SELECT performance_analysis, quiz_score, quiz_total 
-               FROM search_history 
-               WHERE email = %s AND query = %s AND performance_analysis IS NOT NULL 
-               AND id != %s
-               ORDER BY timestamp DESC LIMIT 1""",
-            (user_email, keyword, history_id or 0),
-        )
-        prev = cur.fetchone()
-        if prev:
-            previous_performance = prev["performance_analysis"]
+    # Get cached summary from ANY record
+    cached = db.query(SearchHistory).filter(
+        SearchHistory.query == keyword,
+        SearchHistory.summary.isnot(None)
+    ).order_by(SearchHistory.timestamp.desc()).first()
+    
+    if cached:
+        summary_text = cached.summary
 
-        # Handle current record state
-        if history_id:
-            cur.execute(
-                "SELECT quiz_json, is_favorite FROM search_history WHERE id = %s",
-                (history_id,),
-            )
-            row = cur.fetchone()
-            if row:
-                cached_quiz = json.loads(row["quiz_json"]) if row["quiz_json"] else None
-                is_favorite = bool(row["is_favorite"])
-    finally:
-        cur.close()
-        db.close()
+    # Check for user's previous attempt on SAME topic
+    prev = db.query(SearchHistory).filter(
+        SearchHistory.email == user_email,
+        SearchHistory.query == keyword,
+        SearchHistory.performance_analysis.isnot(None),
+        SearchHistory.id != (history_id or 0)
+    ).order_by(SearchHistory.timestamp.desc()).first()
+    
+    if prev:
+        previous_performance = prev.performance_analysis
 
-    # Step 2: AI Generation (Slow - NO DB CONNECTION HELD)
+    if history_id:
+        current_history = db.query(SearchHistory).filter(SearchHistory.id == history_id).first()
+        if current_history:
+            cached_quiz = json.loads(current_history.quiz_json) if current_history.quiz_json else None
+            is_favorite = bool(current_history.is_favorite)
+    
     if not summary_text:
         summary_text = query_ollama(keyword)
 
-    # Adaptive MCQ Logic: If returning user, generate NEW adaptive quiz if none exists for CURRENT history_id
     if summary_text and not cached_quiz and previous_performance:
         print(f"Generating adaptive quiz for {user_email} on {keyword}...")
         cached_quiz = generate_mcqs(summary_text, previous_analysis=previous_performance)
         
-        # Save this new quiz to the current record immediately
         if history_id and cached_quiz:
-            db = get_db()
-            cur = db.cursor()
-            try:
-                cur.execute(
-                    "UPDATE search_history SET quiz_json = %s WHERE id = %s",
-                    (json.dumps(cached_quiz), history_id),
-                )
+            current_history = db.query(SearchHistory).filter(SearchHistory.id == history_id).first()
+            if current_history:
+                current_history.quiz_json = json.dumps(cached_quiz)
                 db.commit()
-            finally:
-                cur.close()
-                db.close()
 
-    # Step 3: Persistence for summary
     if history_id and summary_text:
-        db = get_db()
-        cur = db.cursor()
-        try:
-            cur.execute(
-                "UPDATE search_history SET summary = %s WHERE id = %s",
-                (summary_text, history_id),
-            )
+        current_history = db.query(SearchHistory).filter(SearchHistory.id == history_id).first()
+        if current_history:
+            current_history.summary = summary_text
             db.commit()
-        finally:
-            cur.close()
-            db.close()
 
     return {
         "summary": summary_text,
@@ -431,46 +346,30 @@ def summary(data: SummaryRequest, user=Depends(verify_jwt)):
     }
 
 @app.post("/save_quiz")
-def save_quiz(data: SaveQuizRequest, _user=Depends(verify_jwt)):
-    quiz_json = json.dumps(data.quiz)
-    db = get_db()
-    cur = db.cursor()
-    try:
-        cur.execute(
-            "UPDATE search_history SET quiz_json = %s WHERE id = %s",
-            (quiz_json, data.historyId),
-        )
+def save_quiz(data: SaveQuizRequest, _user=Depends(verify_jwt), db: Session = Depends(get_session)):
+    history = db.query(SearchHistory).filter(SearchHistory.id == data.historyId).first()
+    if history:
+        history.quiz_json = json.dumps(data.quiz)
         db.commit()
         return {"message": "Quiz saved"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cur.close()
-        db.close()
-
+    raise HTTPException(status_code=404, detail="Not found")
+    
 @app.post("/save_score")
-def save_score(data: SaveScoreRequest, _user=Depends(verify_jwt)):
-    db = get_db()
-    cur = db.cursor()
-    try:
-        cur.execute(
-            "UPDATE search_history SET quiz_score = %s, quiz_total = %s WHERE id = %s",
-            (data.score, data.total, data.historyId),
-        )
+def save_score(data: SaveScoreRequest, _user=Depends(verify_jwt), db: Session = Depends(get_session)):
+    history = db.query(SearchHistory).filter(SearchHistory.id == data.historyId).first()
+    if history:
+        history.quiz_score = data.score
+        history.quiz_total = data.total
         db.commit()
         return {"message": "Score saved"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cur.close()
-        db.close()
+    raise HTTPException(status_code=404, detail="Not found")
 
 # ─────────────────────────────────────────────
 # Video Routes
 # ─────────────────────────────────────────────
 
 @app.post("/video")
-def generate_video_route(data: VideoRequest, _user=Depends(verify_jwt)):
+def generate_video_route(data: VideoRequest, _user=Depends(verify_jwt), db: Session = Depends(get_session)):
     try:
         text = data.text
         keyword = data.keyword or "technology"
@@ -478,25 +377,16 @@ def generate_video_route(data: VideoRequest, _user=Depends(verify_jwt)):
 
         print(f"Request for background video: {keyword}, History ID: {history_id}")
 
-        # Check global cache first
-        db = get_db()
-        cur = dict_cursor(db)
-        try:
-            cur.execute(
-                "SELECT video_filename FROM search_history WHERE query = %s AND video_filename IS NOT NULL ORDER BY timestamp DESC LIMIT 1",
-                (keyword,),
-            )
-            cached = cur.fetchone()
-        finally:
-            cur.close()
-            db.close()
+        cached = db.query(SearchHistory).filter(
+            SearchHistory.query == keyword,
+            SearchHistory.video_filename.isnot(None)
+        ).order_by(SearchHistory.timestamp.desc()).first()
 
-        if cached and cached["video_filename"]:
-            temp_path = os.path.join(VIDEO_STORAGE_DIR, cached["video_filename"])
+        if cached and cached.video_filename:
+            temp_path = os.path.join(VIDEO_STORAGE_DIR, cached.video_filename)
             if os.path.exists(temp_path):
-                return {"status": "completed", "video_url": f"/get_video/{cached['video_filename']}"}
+                return {"status": "completed", "video_url": f"/get_video/{cached.video_filename}"}
 
-        # Dispatch to background thread (Fix 7: lock-protected dict write)
         task_id = str(uuid.uuid4())
         with _video_tasks_lock:
             video_tasks[task_id] = {"status": "processing", "video_url": None, "error": None}
@@ -526,19 +416,16 @@ def _video_worker(task_id: str, text: str, keyword: str, history_id):
         shutil.move(temp_video_path, permanent_path)
 
         if history_id:
-            db = get_db()
-            cur = db.cursor()
+            db_session = SessionLocal()
             try:
-                cur.execute(
-                    "UPDATE search_history SET video_filename = %s WHERE id = %s",
-                    (permanent_filename, history_id),
-                )
-                db.commit()
+                history = db_session.query(SearchHistory).filter(SearchHistory.id == history_id).first()
+                if history:
+                    history.video_filename = permanent_filename
+                    db_session.commit()
             except Exception as e:
                 print(f"Background DB update failed: {e}")
             finally:
-                cur.close()
-                db.close()
+                db_session.close()
 
         with _video_tasks_lock:
             video_tasks[task_id] = {
@@ -546,6 +433,7 @@ def _video_worker(task_id: str, text: str, keyword: str, history_id):
                 "video_url": f"/get_video/{permanent_filename}",
             }
     except Exception as e:
+        print(f"Unhandled general exception in _video_worker: {e}")
         with _video_tasks_lock:
             video_tasks[task_id] = {"status": "error", "error": str(e)}
 
@@ -559,7 +447,6 @@ def get_video_status(task_id: str):
 
 @app.get("/get_video/{filename}")
 def serve_video(filename: str):
-    # Prevent path traversal attack
     safe_name = os.path.basename(filename)
     file_path = os.path.join(VIDEO_STORAGE_DIR, safe_name)
     if not os.path.exists(file_path):
@@ -574,9 +461,8 @@ def serve_video(filename: str):
 def get_mcqs(data: MCQRequest):
     return generate_mcqs(data.text)
 
-# Fix 8: Evaluate endpoint now works — returns correct/wrong + AI explanation
 @app.post("/evaluate")
-def evaluate(data: EvaluateRequest):
+def evaluate(data: EvaluateRequest, _user=Depends(verify_jwt), db: Session = Depends(get_session)):
     results = []
     answers_for_analysis = []
     for item in data.answers:
@@ -597,61 +483,130 @@ def evaluate(data: EvaluateRequest):
             "is_correct": is_correct
         })
     
-    # Generate overall performance analysis
     analysis = generate_performance_analysis(data.topic, answers_for_analysis)
     
-    # Save results to DB if historyId provided
     if data.historyId:
-        db = get_db()
-        cur = db.cursor()
         try:
-            results_json = json.dumps(results)
-            cur.execute(
-                "UPDATE search_history SET performance_analysis = %s, quiz_results = %s WHERE id = %s",
-                (analysis, results_json, data.historyId),
-            )
-            db.commit()
+            history = db.query(SearchHistory).filter(SearchHistory.id == data.historyId).first()
+            if history:
+                history.performance_analysis = analysis
+                history.quiz_results = json.dumps(results)
+                db.commit()
         except Exception as e:
             print(f"Error saving evaluation results: {e}")
-        finally:
-            cur.close()
-            db.close()
 
     return {
         "results": results,
         "analysis": analysis
     }
 
-# ─────────────────────────────────────────────
-# Feedback Routes
-# ─────────────────────────────────────────────
 
-@app.post("/feedback")
-def submit_feedback(data: FeedbackRequest, user=Depends(verify_jwt)):
-    db = get_db()
-    cur = db.cursor()
+# ─────────────────────────────────────────────
+# Local Sandboxed Execution Routes
+# ─────────────────────────────────────────────
+@app.post("/execute_code")
+def execute_code(data: ExecuteCodeRequest, _user=Depends(verify_jwt)):
+    # Local sandboxed execution implementation
+    lang = data.language.lower()
+    code = data.code
+    
+    stdout_val = ""
+    stderr_val = ""
+    exit_code = 1
+    
     try:
-        user_id = user["id"]
-        username = user["username"]
-        cur.execute(
-            "INSERT INTO feedback (user_id, username, content, rating) VALUES (%s, %s, %s, %s)",
-            (user_id, username, data.content, data.rating),
-        )
-        db.commit()
-        return {"message": "Feedback submitted successfully"}
-    finally:
-        cur.close()
-        db.close()
+        if lang == "python":
+            res = subprocess.run(["python", "-c", code], capture_output=True, text=True, timeout=5)
+            stdout_val, stderr_val, exit_code = res.stdout, res.stderr, res.returncode
+            
+        elif lang == "javascript":
+            res = subprocess.run(["node", "-e", code], capture_output=True, text=True, timeout=5)
+            stdout_val, stderr_val, exit_code = res.stdout, res.stderr, res.returncode
+            
+        elif lang == "sqlite3":
+            # Native SQLite3 execution
+            with sqlite3.connect(":memory:") as conn:
+                try:
+                    cursor = conn.cursor()
+                    all_results = []
+                    # Split by semicolon and execute each statement
+                    for statement in code.split(';'):
+                        stmt = statement.strip()
+                        if not stmt:
+                            continue
+                        cursor.execute(stmt)
+                        if cursor.description: # This indicates a query like SELECT
+                            rows = cursor.fetchall()
+                            all_results.extend(rows)
+                    
+                    if all_results:
+                        stdout_val = "\n".join([str(row) for row in all_results])
+                    exit_code = 0
+                except Exception as e:
+                    stderr_val = str(e)
+                    exit_code = 1
+                    
+        elif lang == "java":
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Java requires class name to match file name. We will just enforce Main.java
+                java_file = os.path.join(temp_dir, "Main.java")
+                with open(java_file, "w") as f:
+                    f.write(code)
+                
+                # Compile
+                compile_res = subprocess.run(["javac", "Main.java"], cwd=temp_dir, capture_output=True, text=True, timeout=5)
+                if compile_res.returncode != 0:
+                    exit_code = compile_res.returncode
+                    stderr_val = compile_res.stderr
+                else:
+                    # Execute
+                    run_res = subprocess.run(["java", "Main"], cwd=temp_dir, capture_output=True, text=True, timeout=5)
+                    stdout_val, stderr_val, exit_code = run_res.stdout, run_res.stderr, run_res.returncode
+                    
+        elif lang == "cpp":
+            with tempfile.TemporaryDirectory() as temp_dir:
+                cpp_file = os.path.join(temp_dir, "temp.cpp")
+                out_file = os.path.join(temp_dir, "a.exe" if os.name == "nt" else "a.out")
+                with open(cpp_file, "w") as f:
+                    f.write(code)
+                
+                # Compile
+                compile_res = subprocess.run(["g++", "temp.cpp", "-o", out_file], cwd=temp_dir, capture_output=True, text=True, timeout=5)
+                if compile_res.returncode != 0:
+                    exit_code = compile_res.returncode
+                    stderr_val = compile_res.stderr
+                else:
+                    # Execute
+                    run_res = subprocess.run([out_file], cwd=temp_dir, capture_output=True, text=True, timeout=5)
+                    stdout_val, stderr_val, exit_code = run_res.stdout, run_res.stderr, run_res.returncode
+        else:
+            return JSONResponse(status_code=400, content={"error": f"Unsupported language: {lang}"})
+            
+    except subprocess.TimeoutExpired:
+        stderr_val = "Execution timed out (5 seconds max limit exceeded)."
+        exit_code = 124
+    except Exception as e:
+        stderr_val = f"Execution engine error: {str(e)}"
+        exit_code = 1
+        
+    return {
+        "run": {
+            "stdout": stdout_val.strip(),
+            "stderr": stderr_val.strip(),
+            "code": exit_code
+        }
+    }
+
 
 # ─────────────────────────────────────────────
 # Run
 # ─────────────────────────────────────────────
-# Fix 5: Global Exception Handler for DB Pool Exhaustion
-@app.exception_handler(PoolError)
+@app.exception_handler(OperationalError)
+@app.exception_handler(TimeoutError)
 async def pool_error_handler(request, exc):
     return JSONResponse(
         status_code=503,
-        content={"error": "Server busy. Please try again in a few seconds."},
+        content={"error": "Database error. Server busy or unreachable."},
     )
 
 if __name__ == "__main__":

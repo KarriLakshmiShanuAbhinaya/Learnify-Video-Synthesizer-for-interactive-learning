@@ -1,0 +1,61 @@
+version: "3.9"
+
+services:
+  db:
+    image: mysql:8.4
+    container_name: learnify-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: learnifydb
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: learnify-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SQLALCHEMY_DATABASE_URL: mysql+pymysql://root:root@db:3306/learnifydb
+      DB_HOST: db
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: learnifydb
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: learnify-frontend
+    restart: unless-stopped
+    environment:
+      REACT_APP_API_URL: http://localhost:5000
+      CHOKIDAR_USEPOLLING: "true"
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  mysql_data:
