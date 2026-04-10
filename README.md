@@ -11,6 +11,16 @@ Learnify is a state-of-the-art educational application that leverages Artificial
 -   **💻 Code Practice**: A built-in multi-language code editor (Monaco) supporting Python, JavaScript, Java, C++, and SQL (SQLite3) with real-time execution.
 -   **🎨 Premium UI**: A modern, glassmorphic interface with dark/light mode support and smooth animations.
 -   **🎥 Interactive Learning Paths**: Select multiple videos to build a cohesive learning curriculum.
+14: 
+15: ## 🎓 Publication & Recognition
+16: 
+17: Learnify is backed by academic research and has been published in the **International Journal of Engineering Research & Technology (IJERT)**.
+18: 
+19: -   **Research Paper**: [LEARNIFY: An NLP-Driven Video Synthesizer for Interactive Learning Using Web Scraping](assets/Research_Paper.pdf)
+20: -   **Official Certificate**: [View Publication Certificate](assets/Publication_Certificate.pdf)
+21: 
+22: > [!NOTE]  
+23: > The publication highlights the innovative use of NLP and web scraping technologies to enhance interactive learning environments.
 
 ## 🛠️ Technology Stack
 
