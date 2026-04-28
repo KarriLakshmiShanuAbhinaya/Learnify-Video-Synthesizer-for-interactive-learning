@@ -6,7 +6,8 @@ alembic
 pymysql
 python-dotenv
 PyJWT
-passlib[bcrypt]
+Werkzeug
+google-api-python-client
 requests
 beautifulsoup4
 googlesearch-python
