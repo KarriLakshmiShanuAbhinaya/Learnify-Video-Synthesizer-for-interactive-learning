@@ -20,7 +20,7 @@ function SummaryPage() {
     const [videoLoading, setVideoLoading] = useState(false);
     const [error, setError] = useState("");
     const [evaluatedResults, setEvaluatedResults] = useState([]);
-    const [showExplanation, setShowExplanation] = useState({});
+
     const [isFavorite, setIsFavorite] = useState(false);
     const [taskId, setTaskId] = useState(null);
     const [analysis, setAnalysis] = useState("");
@@ -97,10 +97,11 @@ function SummaryPage() {
             finally { setLoading(false); }
         };
         fetchSummary();
-    }, [keyword, videoIds]);
+    }, [keyword, videoIds, historyId]);
 
     useEffect(() => {
         if (summaryText && !videoUrl && !videoLoading && !error && !taskId) generateVideo();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [summaryText, error]);
 
     // Fix 11: Polling with cleanup and robust error handling
